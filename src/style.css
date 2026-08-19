@@ -1,0 +1,22 @@
+.params-table-pdf-uHjiO9 {
+  border-collapse: collapse;
+  table-layout: fixed;
+  width: 210mm;
+  font-size: 12px;
+  line-height: 20px;
+
+  th {
+    font-size: 14px;
+    font-weight: 500;
+  }
+  th, td {
+    padding: 2px 4px;
+    border: 1px solid black;
+    word-break: break-all;
+    text-align: center;
+  }
+  .tr-head {
+    background-color: #b5c6ea;
+  }
+}
+
