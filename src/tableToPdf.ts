@@ -90,6 +90,8 @@ async function domToMultipleCanvas(dom: HTMLElement, options: DomToImageOptions)
   const { width, height } = options
   const ratio = window.devicePixelRatio
 
+  console.debug(`dom尺寸 width: ${width}, height: ${height}`)
+
   // 待分割的图像
   console.time('svgToDataUrl')
   const svgUrl = await svgToDataUrl(domToSvg(dom, options))
@@ -101,7 +103,7 @@ async function domToMultipleCanvas(dom: HTMLElement, options: DomToImageOptions)
 
   console.time('split canvas')
   // canvas最大高度，超过此高度的图像，将会被分割为多个canvas
-  const canvasList: { canvas: OffscreenCanvas, ctx: OffscreenCanvasRenderingContext2D }[] = []
+  const canvasList: OffscreenCanvas[] = []
   const canvasMaxHeight = 16384
   const canvasWidth = width * ratio
 
@@ -110,12 +112,12 @@ async function domToMultipleCanvas(dom: HTMLElement, options: DomToImageOptions)
   while (renderHeight > 0) {
     const canvasHeight = Math.min(canvasMaxHeight, renderHeight)
     const canvas = new OffscreenCanvas(canvasWidth, canvasHeight)
-    const ctx = canvas.getContext('2d', { willReadFrequently: true, alpha: false })!
+    const ctx = canvas.getContext('2d', { alpha: false })!
     ctx.scale(ratio, ratio)
     ctx.fillStyle = '#fff'
     ctx.fillRect(0, 0, canvas.width, canvas.height)
     ctx.drawImage(img, 0, splitPositionY, canvasWidth, canvasHeight, 0, 0, canvasWidth, canvasHeight)
-    canvasList.push({ canvas, ctx })
+    canvasList.push(canvas)
 
     splitPositionY += canvasHeight / ratio
     renderHeight -= canvasHeight
@@ -124,7 +126,7 @@ async function domToMultipleCanvas(dom: HTMLElement, options: DomToImageOptions)
   }
   console.timeEnd('split canvas')
 
-  console.debug(`拆分为${ canvasList.length }个canvas：${ canvasList.map(i => i.canvas.height).join('、') }`)
+  console.debug(`拆分为${ canvasList.length }个canvas：${ canvasList.map(i => i.height).join('、') }`)
 
   return function drawImageToTargetCanvas(targetCtx: CanvasRenderingContext2D, sx: number, sy: number, sWidth: number, sHeight: number, dx: number, dy: number, dWidth: number, dHeight: number) {
     // 先分割第一个canvas
@@ -132,16 +134,16 @@ async function domToMultipleCanvas(dom: HTMLElement, options: DomToImageOptions)
     // 这里的sy是相对于所有canvas拼起来后的，所以需要转换为相对于第一个要分割的canvas的sy
     sy -= startIndex * canvasMaxHeight
     const firstItem = canvasList[startIndex]
-    const firstSplitHeight = Math.min(sHeight, firstItem.canvas.height - sy)
-    targetCtx.putImageData(firstItem.ctx.getImageData(sx, sy, sWidth, firstSplitHeight), dx, dy)
+    const firstSplitHeight = Math.min(sHeight, firstItem.height - sy)
+    targetCtx.drawImage(firstItem, sx, sy, sWidth, firstSplitHeight, dx, dy, sWidth, firstSplitHeight)
 
     // 第一个分完还需要继续分后面的canvas
     let remainHeight = sHeight - firstSplitHeight
     let index = startIndex + 1
     while (remainHeight > 0) {
       const item = canvasList[index]
-      const splitHeight = Math.min(remainHeight, item.canvas.height)
-      targetCtx.putImageData(item.ctx.getImageData(sx, 0, sWidth, splitHeight), dx, dy + sHeight - remainHeight)
+      const splitHeight = Math.min(remainHeight, item.height)
+      targetCtx.drawImage(item, sx, 0, sWidth, splitHeight, dx, dy + sHeight - remainHeight, sWidth, splitHeight)
 
       remainHeight -= splitHeight
       index++
