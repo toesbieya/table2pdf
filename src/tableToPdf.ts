@@ -82,17 +82,20 @@ function domToCanvas(dom: HTMLElement, options: DomToImageOptions): Promise<HTML
 }
 
 /**
- * 支持生成超过32767大小的图片，但是需要手动用canvas拼接图像
+ * canvas分块绘制的最大高度，超过此高度的单页切片需要分块拼接
+ */
+const canvasMaxHeight = 16384
+
+/**
+ * dom转图片，图片尺寸为dom的offsetWidth×offsetHeight（CSS像素）
  * @param dom
  * @param options
  */
-async function domToMultipleCanvas(dom: HTMLElement, options: DomToImageOptions) {
+const domToImage = async (dom: HTMLElement, options: DomToImageOptions): Promise<HTMLImageElement> => {
   const { width, height } = options
-  const ratio = window.devicePixelRatio
 
   console.debug(`dom尺寸 width: ${width}, height: ${height}`)
 
-  // 待分割的图像
   console.time('svgToDataUrl')
   const svgUrl = await svgToDataUrl(domToSvg(dom, options))
   console.timeEnd('svgToDataUrl')
@@ -101,53 +104,43 @@ async function domToMultipleCanvas(dom: HTMLElement, options: DomToImageOptions)
   console.debug('生成的图像大小', img.width, img.height)
   console.timeEnd('createImage')
 
-  console.time('split canvas')
-  // canvas最大高度，超过此高度的图像，将会被分割为多个canvas
-  const canvasList: OffscreenCanvas[] = []
-  const canvasMaxHeight = 16384
-  const canvasWidth = width * ratio
+  return img
+}
 
-  // 注意由于drawImage是直接使用的图片元素，所以splitPositionY和canvas缩放没有关系，是图片的原始像素
-  let splitPositionY = 0, renderHeight = height * ratio
-  while (renderHeight > 0) {
-    const canvasHeight = Math.min(canvasMaxHeight, renderHeight)
-    const canvas = new OffscreenCanvas(canvasWidth, canvasHeight)
-    const ctx = canvas.getContext('2d', { alpha: false })!
-    ctx.scale(ratio, ratio)
-    ctx.fillStyle = '#fff'
-    ctx.fillRect(0, 0, canvas.width, canvas.height)
-    ctx.drawImage(img, 0, splitPositionY, canvasWidth, canvasHeight, 0, 0, canvasWidth, canvasHeight)
-    canvasList.push(canvas)
+/**
+ * 把整图指定区域绘制到目标canvas
+ * 目标canvas尺寸须为 width*dpr × height*dpr；区域高度超过canvas上限时自动分块绘制
+ * @param img 整图
+ * @param width 区域宽度（CSS px）
+ * @param height 区域高度（CSS px）
+ * @param startY 区域起始y（CSS px）
+ * @param targetCtx 目标canvas上下文
+ */
+const drawTableSlice = (img: HTMLImageElement, width: number, height: number, startY: number, targetCtx: CanvasRenderingContext2D) => {
+  const ratio = window.devicePixelRatio
+  const targetWidth = width * ratio
 
-    splitPositionY += canvasHeight / ratio
-    renderHeight -= canvasHeight
+  targetCtx.fillStyle = '#fff'
+  targetCtx.fillRect(0, 0, targetCtx.canvas.width, targetCtx.canvas.height)
 
-    await sleep()
+  // 高度未超过canvas上限，单次绘制
+  if (targetCtx.canvas.height <= canvasMaxHeight) {
+    targetCtx.drawImage(img, 0, startY, width, height, 0, 0, targetWidth, targetCtx.canvas.height)
+    return
   }
-  console.timeEnd('split canvas')
 
-  console.debug(`拆分为${ canvasList.length }个canvas：${ canvasList.map(i => i.height).join('、') }`)
-
-  return function drawImageToTargetCanvas(targetCtx: CanvasRenderingContext2D, sx: number, sy: number, sWidth: number, sHeight: number, dx: number, dy: number, dWidth: number, dHeight: number) {
-    // 先分割第一个canvas
-    const startIndex = Math.floor(sy / canvasMaxHeight)
-    // 这里的sy是相对于所有canvas拼起来后的，所以需要转换为相对于第一个要分割的canvas的sy
-    sy -= startIndex * canvasMaxHeight
-    const firstItem = canvasList[startIndex]
-    const firstSplitHeight = Math.min(sHeight, firstItem.height - sy)
-    targetCtx.drawImage(firstItem, sx, sy, sWidth, firstSplitHeight, dx, dy, sWidth, firstSplitHeight)
-
-    // 第一个分完还需要继续分后面的canvas
-    let remainHeight = sHeight - firstSplitHeight
-    let index = startIndex + 1
-    while (remainHeight > 0) {
-      const item = canvasList[index]
-      const splitHeight = Math.min(remainHeight, item.height)
-      targetCtx.drawImage(item, sx, 0, sWidth, splitHeight, dx, dy + sHeight - remainHeight, sWidth, splitHeight)
-
-      remainHeight -= splitHeight
-      index++
-    }
+  // 超过canvas上限，分块绘制后拼接
+  let chunkStartY = startY, chunkTop = 0
+  while (chunkTop < targetCtx.canvas.height) {
+    const chunkHeight = Math.min(canvasMaxHeight, targetCtx.canvas.height - chunkTop)
+    const chunk = new OffscreenCanvas(targetWidth, chunkHeight)
+    const chunkCtx = chunk.getContext('2d', { alpha: false })!
+    chunkCtx.fillStyle = '#fff'
+    chunkCtx.fillRect(0, 0, chunk.width, chunk.height)
+    chunkCtx.drawImage(img, 0, chunkStartY, width, chunkHeight / ratio, 0, 0, chunk.width, chunkHeight)
+    targetCtx.drawImage(chunk, 0, chunkTop)
+    chunkStartY += chunkHeight / ratio
+    chunkTop += chunkHeight
   }
 }
 
@@ -221,28 +214,26 @@ export const tableToPdfDocument = async (table: HTMLTableElement, css?: string) 
   const pages = getTablePageBreakPosition(table, Math.floor(maxContentHeight / pxToRelative))
   console.timeEnd('getTablePageBreakPosition')
 
-  // const canvas = await domToCanvas(table, { css, width: elWidth, height: elHeight })
-  const drawImageToTargetCanvas = await domToMultipleCanvas(table, { css, width: elWidth, height: elHeight })
+  const img = await domToImage(table, { css, width: elWidth, height: elHeight })
 
   await sleep()
 
-  // 用于截取主canvas的图像
+  // 用于截取整图的canvas
   const tempCanvas = document.createElement('canvas')
   tempCanvas.width = elWidth * dpr
   tempCanvas.height = 100
-  const tempCtx = tempCanvas.getContext('2d')!
+  // alpha:false 保证与旧版分块烘焙效果一致（透明区域直接白底），且png不含alpha通道
+  const tempCtx = tempCanvas.getContext('2d', { alpha: false })!
 
   for (let i = 0; i < pages.length; i++) {
     const [startPosition, endPosition] = pages[i]
     const height = endPosition - startPosition
 
     tempCanvas.height = height * dpr
-    tempCtx.clearRect(0, 0, tempCanvas.width, tempCanvas.height)
 
-    console.time(`drawImageToTargetCanvas 第${ i + 1 }页`)
-    // tempCtx.drawImage(canvas, 0, startPosition * dpr, tempCanvas.width, tempCanvas.height, 0, 0, tempCanvas.width, tempCanvas.height)
-    drawImageToTargetCanvas(tempCtx, 0, startPosition * dpr, tempCanvas.width, tempCanvas.height, 0, 0, tempCanvas.width, tempCanvas.height)
-    console.timeEnd(`drawImageToTargetCanvas 第${ i + 1 }页`)
+    console.time(`drawTableSlice 第${ i + 1 }页`)
+    drawTableSlice(img, elWidth, height, startPosition, tempCtx)
+    console.timeEnd(`drawTableSlice 第${ i + 1 }页`)
 
     await sleep()
 
