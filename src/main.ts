@@ -62,7 +62,7 @@ interface Row {
 
 const shortAddr = '短地址'
 const longAddr = '长地址长地址长地址长地址长地址长地址长地址长地址长地址长地址长地址长地址长地址长地址长地址长地址长地址长地址长地址长地址'
-const rows: Row[] = Array(100).fill(0).map((_, i) => ({
+const rows: Row[] = Array(1000).fill(0).map((_, i) => ({
   name: '名称' + i,
   value: '值' + i,
   address: i % 3 === 0 ? longAddr : shortAddr
