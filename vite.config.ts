@@ -3,7 +3,7 @@ import { defineConfig } from 'vite'
 
 export default defineConfig(() => {
   return {
-    base: '/',
+    base: '/table2pdf/',
     resolve: {
       alias: {
         '@': fileURLToPath(new URL('./src', import.meta.url))
